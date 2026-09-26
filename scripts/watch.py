@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from download import download, is_url  # noqa: E402
 from frames import (  # noqa: E402
-    MAX_FPS, auto_fps, auto_fps_focus, extract, extract_scene_change,
+    DEFAULT_MAX_SHOT_GAP, MAX_FPS, auto_fps, auto_fps_focus, extract, extract_scene_change,
     format_time, get_metadata, parse_time, select_hero_frames,
 )
 from hook import analyse_hook  # noqa: E402
@@ -60,6 +60,15 @@ def main() -> int:
         "--no-scene-change",
         action="store_true",
         help="Force uniform frame sampling (skip scene-change detection).",
+    )
+    ap.add_argument(
+        "--max-shot-gap",
+        type=float,
+        default=DEFAULT_MAX_SHOT_GAP,
+        help=(
+            "Hybrid sampling: add evenly spaced frames inside any shot longer than this "
+            f"many seconds (default {DEFAULT_MAX_SHOT_GAP:g}; 0 = one frame per shot only)."
+        ),
     )
     ap.add_argument(
         "--no-hook-microscope",
@@ -128,7 +137,15 @@ def main() -> int:
             uniform_fallback_min=10,
             start_seconds=start_sec,
             end_seconds=end_sec,
+            max_shot_gap=args.max_shot_gap,
         )
+        gap_fill_count = sum(1 for f in frames if f.get("source") == "gap-fill")
+        if gap_fill_count:
+            print(
+                f"[watch] added {gap_fill_count} gap-fill frames inside shots longer than "
+                f"{args.max_shot_gap:g}s…",
+                file=sys.stderr,
+            )
         sampling_mode = (
             "scene-change" if frames and frames[0].get("source") == "scene-change"
             else "uniform-fallback"
@@ -147,7 +164,8 @@ def main() -> int:
 
     # Pacing: derive scene-change timestamps from frame metadata.
     if sampling_mode == "scene-change":
-        scene_times = [f["timestamp_seconds"] for f in frames]
+        # Gap-fill frames sit inside shots, so they are not cuts.
+        scene_times = [f["timestamp_seconds"] for f in frames if f.get("source") == "scene-change"]
     else:
         scene_times = []
     pacing = compute_pacing(
@@ -276,7 +294,8 @@ def main() -> int:
     )
     print()
     for frame in frames:
-        print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
+        tag = ", gap-fill" if frame.get("source") == "gap-fill" else ""
+        print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])}{tag})")
 
     print()
     print("## Transcript")

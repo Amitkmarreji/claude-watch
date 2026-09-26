@@ -9,6 +9,7 @@ zooming in for detail).
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -201,6 +202,94 @@ def drop_flash_shots(times: list[float], min_shot_seconds: float = MIN_SHOT_SECO
     ]
 
 
+DEFAULT_MAX_SHOT_GAP = 8.0
+
+
+def gap_fill_times(
+    shot_starts: list[float], range_end: float, max_gap: float, budget: int,
+) -> list[float]:
+    """Extra sample times so no stretch between frames exceeds `max_gap` seconds.
+
+    Scene-change sampling gives one frame per shot, which leaves long camera
+    moves or continuous animation with a single frame. Each shot longer than
+    `max_gap` is split into equal pieces. If that needs more than `budget`
+    frames, the spacing widens until it fits. `max_gap <= 0` disables filling.
+    """
+    if not shot_starts or max_gap <= 0 or budget <= 0:
+        return []
+    bounds = sorted(shot_starts) + [range_end]
+    spans = [(a, b - a) for a, b in zip(bounds, bounds[1:]) if b - a > 0]
+
+    def pieces(gap: float) -> list[int]:
+        return [max(1, math.ceil(length / gap)) for _, length in spans]
+
+    gap = max_gap
+    while sum(n - 1 for n in pieces(gap)) > budget:
+        gap *= 1.1
+    return [
+        start + length * k / n
+        for (start, length), n in zip(spans, pieces(gap))
+        for k in range(1, n)
+    ]
+
+
+def _extract_frame_at(video_path: str, t: float, out_path: Path, resolution: int) -> bool:
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", f"{t:.3f}", "-i", str(Path(video_path).resolve()),
+        "-frames:v", "1", "-vf", f"scale={resolution}:-2", "-q:v", "4",
+        str(out_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not out_path.exists():
+        print(f"[watch] gap-fill frame at {t:.2f}s failed: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
+
+
+def _renumber_in_order(paths: list[Path], out_dir: Path) -> list[Path]:
+    """Rename `paths` (already in display order) to frame_0001.jpg, frame_0002.jpg, ...
+
+    Two-phase via temporary names, since merged gap-fill frames can shift an
+    existing frame onto a name another survivor still holds.
+    """
+    staged = []
+    for i, p in enumerate(paths):
+        tmp = out_dir / f"_renumber_{i:04d}.jpg"
+        p.rename(tmp)
+        staged.append(tmp)
+    final = []
+    for i, tmp in enumerate(staged, start=1):
+        target = out_dir / f"frame_{i:04d}.jpg"
+        tmp.rename(target)
+        final.append(target)
+    return final
+
+
+def _add_gap_fill(
+    video_path: str, out_dir: Path, frames: list[Path], pts_times: list[float],
+    range_start: float, range_end: float, max_shot_gap: float, budget: int, resolution: int,
+) -> tuple[list[Path], list[float], list[str]]:
+    """Merge gap-fill frames into the scene frames. Times are relative to range_start."""
+    sources = ["scene-change"] * len(frames)
+    extra_times = gap_fill_times(pts_times, range_end - range_start, max_shot_gap, budget)
+    extras = []
+    for i, t in enumerate(extra_times):
+        path = out_dir / f"_gapfill_{i:04d}.jpg"
+        if _extract_frame_at(video_path, range_start + t, path, resolution):
+            extras.append((t, path))
+    if not extras:
+        return frames, pts_times, sources
+
+    merged = sorted(
+        [(t, p, "scene-change") for t, p in zip(pts_times, frames)]
+        + [(t, p, "gap-fill") for t, p in extras],
+        key=lambda row: row[0],
+    )
+    paths = _renumber_in_order([p for _, p, _ in merged], out_dir)
+    return paths, [t for t, _, _ in merged], [s for _, _, s in merged]
+
+
 def _keep_and_renumber(
     frames: list[Path], pts_times: list[float], keep: list[int], out_dir: Path,
 ) -> tuple[list[Path], list[float]]:
@@ -230,6 +319,7 @@ def extract_scene_change(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     min_shot_seconds: float = MIN_SHOT_SECONDS,
+    max_shot_gap: float = DEFAULT_MAX_SHOT_GAP,
 ) -> list[dict]:
     """One frame per detected shot. Falls back to uniform sampling when too few scenes.
 
@@ -320,15 +410,24 @@ def extract_scene_change(
         )
 
     offset = start_seconds or 0.0
+    sources = ["scene-change"] * len(frames)
     if len(pts_times) < len(frames):
         pts_times += [0.0] * (len(frames) - len(pts_times))
+    elif max_shot_gap > 0:
+        # Hybrid: top up long shots so continuous footage isn't one frame per 30s.
+        range_end = end_seconds if end_seconds is not None else get_metadata(video_path)["duration_seconds"]
+        frames, pts_times, sources = _add_gap_fill(
+            video_path, out_dir, frames, pts_times,
+            range_start=offset, range_end=range_end, max_shot_gap=max_shot_gap,
+            budget=max_frames - len(frames), resolution=resolution,
+        )
 
     return [
         {
             "index": i,
             "timestamp_seconds": round(offset + pts_times[i], 2),
             "path": str(p),
-            "source": "scene-change",
+            "source": sources[i],
         }
         for i, p in enumerate(frames)
     ]

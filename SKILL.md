@@ -16,7 +16,7 @@ You don't have a video input; this skill gives you one. A Python script download
 
 ## What v2 does differently
 
-- **Scene-change frame sampling** — one frame per detected shot instead of uniform ticks. Cuts the frame budget on long videos while capturing every transition.
+- **Scene-change frame sampling** — one frame per detected shot instead of uniform ticks. Cuts the frame budget on long videos while capturing every transition. Shots longer than 8s also get evenly spaced gap-fill frames (hybrid mode), so continuous footage — long takes, camera moves, animation — isn't reduced to one frame per shot. Gap-fill frames are tagged `gap-fill` in the frame list and never count as cuts in pacing.
 - **Editorial pacing metrics** — cuts/min, mean shot length, motion (when available). Lets you reason about pacing the way an editor does.
 - **Hook microscope** — first 10s auto-runs at 2 fps + word-level Whisper. The single most leveraged 10 seconds of any video deserves dense treatment.
 - **Structured `report.md`** — every watch emits an ingest-shaped report at `<workdir>/report.md` with TL;DR, key moments, hook breakdown, editorial profile, quotable moments, entities, concepts, and transcript. Narrative sections are emitted as `<!-- pending Claude fill: ... -->` markers — you fill them in before offering ingest.
@@ -119,6 +119,7 @@ Optional flags:
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--no-scene-change` — force uniform frame sampling (debug only; usually leave on)
+- `--max-shot-gap S` — hybrid sampling: add evenly spaced frames inside any shot longer than `S` seconds (default 8; `0` = strictly one frame per shot). Lower it (e.g. 4) for slow continuous footage when you need finer coverage.
 - `--no-hook-microscope` — skip the 0-10s dense pass (saves ~1 Whisper call)
 
 ### Focusing on a section (higher frame rate)
