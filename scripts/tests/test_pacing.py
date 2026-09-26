@@ -44,6 +44,18 @@ class TestPacing(unittest.TestCase):
         self.assertEqual(result["mean_shot_length"], 0.0)
         self.assertEqual(result["shots"], [])
 
+    def test_first_shot_starting_after_flash_absorbs_the_gap(self):
+        # A dropped 0.1s opening flash must not come back as a phantom shot.
+        result = compute_pacing(scene_times=[0.1, 7.0], video_duration=10.0)
+        self.assertEqual(result["shot_count"], 2)
+        self.assertAlmostEqual(result["shots"][0]["start_seconds"], 0.0)
+        self.assertAlmostEqual(result["shots"][0]["duration_seconds"], 7.0)
+
+    def test_late_first_shot_still_gets_implicit_opening_shot(self):
+        result = compute_pacing(scene_times=[2.0, 7.0], video_duration=10.0)
+        self.assertEqual(result["shot_count"], 3)
+        self.assertAlmostEqual(result["shots"][0]["duration_seconds"], 2.0)
+
     def test_motion_scores_attached(self):
         result = compute_pacing(
             scene_times=[0.0, 10.0, 20.0],

@@ -21,12 +21,14 @@ def compute_pacing(
     scene_times: list[float],
     video_duration: float,
     motion_scores: list[float] | None = None,
+    min_shot_seconds: float = 0.5,
 ) -> dict:
     """Build shot-by-shot pacing report.
 
     Args:
         scene_times: sorted list of shot-start timestamps (seconds). If the
-            first entry is not ~0, treat 0 as the implicit shot 0 start.
+            first entry is at or past `min_shot_seconds`, treat 0 as the
+            implicit shot 0 start; an earlier first entry is snapped to 0.
         video_duration: total duration of the analysed range (seconds).
         motion_scores: per-shot motion score in [0,1]; len must match shot count.
 
@@ -53,7 +55,11 @@ def compute_pacing(
         }
 
     times = sorted(scene_times)
-    if times[0] > 0.01:
+    if times[0] < min_shot_seconds:
+        # Gap before the first shot is a dropped flash (see frames.drop_flash_shots):
+        # the opening shot absorbs it rather than becoming a phantom sub-min shot.
+        times[0] = 0.0
+    else:
         times = [0.0] + times
 
     shots: list[dict] = []
