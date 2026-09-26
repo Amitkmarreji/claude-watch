@@ -266,7 +266,7 @@ def extract_scene_change(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-fps_mode", "vfr",  # -vsync was removed in ffmpeg 7+
+        "-fps_mode", "vfr",  # -vsync is rejected by newer ffmpeg (seen on 9.0.1); -fps_mode needs 5.1+
         "-frames:v", str(max_frames),
         "-q:v", "4",
         output_pattern,
