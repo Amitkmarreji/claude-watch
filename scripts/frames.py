@@ -185,6 +185,41 @@ def extract(
     ]
 
 
+MIN_SHOT_SECONDS = 0.5
+
+
+def drop_flash_shots(times: list[float], min_shot_seconds: float = MIN_SHOT_SECONDS) -> list[int]:
+    """Return indices of shot starts to keep, dropping shots shorter than `min_shot_seconds`.
+
+    A shot that lasts less than the minimum before the next cut is a flash
+    (cover frame, glitch, fast transition), not a shot. The later frame wins
+    because it is what actually stays on screen. The last shot is always kept.
+    """
+    return [
+        i for i, t in enumerate(times)
+        if i == len(times) - 1 or times[i + 1] - t >= min_shot_seconds
+    ]
+
+
+def _keep_and_renumber(
+    frames: list[Path], pts_times: list[float], keep: list[int], out_dir: Path,
+) -> tuple[list[Path], list[float]]:
+    """Delete frames not in `keep` and rename survivors to contiguous frame_%04d.jpg."""
+    keep_set = set(keep)
+    for i, p in enumerate(frames):
+        if i not in keep_set:
+            p.unlink()
+    # Kept indices are ascending and new numbers never exceed old ones, so
+    # renaming in order never clobbers a not-yet-renamed survivor.
+    renamed = []
+    for new_idx, old_idx in enumerate(keep, start=1):
+        target = out_dir / f"frame_{new_idx:04d}.jpg"
+        if frames[old_idx] != target:
+            frames[old_idx].rename(target)
+        renamed.append(target)
+    return renamed, [pts_times[i] for i in keep]
+
+
 def extract_scene_change(
     video_path: str,
     out_dir: Path,
@@ -194,6 +229,7 @@ def extract_scene_change(
     uniform_fallback_min: int = 10,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    min_shot_seconds: float = MIN_SHOT_SECONDS,
 ) -> list[dict]:
     """One frame per detected shot. Falls back to uniform sampling when too few scenes.
 
@@ -230,7 +266,7 @@ def extract_scene_change(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        "-fps_mode", "vfr",  # -vsync was removed in ffmpeg 7+
         "-frames:v", str(max_frames),
         "-q:v", "4",
         output_pattern,
@@ -259,6 +295,13 @@ def extract_scene_change(
                             pass
 
     frames = sorted(out_dir.glob("frame_*.jpg"))
+
+    # Drop sub-`min_shot_seconds` flashes (e.g. a cover frame before the first
+    # real cut). Only safe when every frame has a parsed timestamp.
+    if len(pts_times) == len(frames):
+        keep = drop_flash_shots(pts_times, min_shot_seconds)
+        if len(keep) < len(frames):
+            frames, pts_times = _keep_and_renumber(frames, pts_times, keep, out_dir)
 
     # Fallback: too few scene frames means this video is static-ish.
     if len(frames) < uniform_fallback_min:
